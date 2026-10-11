@@ -1,0 +1,94 @@
+name: Xiaomi HyperOS Dialer - CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # 1. Build, Lint & Package Job
+  build-and-test:
+    name: Build, Lint & Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: TypeScript Lint & Typecheck
+        run: npm run lint
+
+      - name: Production Vite Build
+        run: npm run build
+
+      - name: Create Clean Source Code ZIP Archive
+        run: |
+          mkdir -p output
+          python3 -c "
+          import zipfile, os
+          exclude_dirs = {'node_modules', '.git', 'dist', '.aistudio', 'output'}
+          zip_filename = 'output/xiaomi-hyperos-dialer.zip'
+          with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+              for root, dirs, files in os.walk('.'):
+                  dirs[:] = [d for d in dirs if d not in exclude_dirs]
+                  for file in files:
+                      if file.endswith('.zip'):
+                          continue
+                      filepath = os.path.join(root, file)
+                      arcname = os.path.relpath(filepath, '.')
+                      zipf.write(filepath, arcname)
+          "
+          cp output/xiaomi-hyperos-dialer.zip dist/xiaomi-hyperos-dialer.zip
+
+      - name: Upload Build & ZIP Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaomi-dialer-release
+          path: |
+            dist/
+            output/xiaomi-hyperos-dialer.zip
+          retention-days: 30
+
+      - name: Setup GitHub Pages
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages Artifact
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './dist'
+
+  # 2. Deploy to GitHub Pages Job (Runs automatically on main branch)
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
