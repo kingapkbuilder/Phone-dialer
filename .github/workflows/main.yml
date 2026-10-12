@@ -1,4 +1,4 @@
-name: Xiaomi HyperOS Dialer - CI/CD & APK Builder
+name: Build Xiaomi HyperOS Dialer APK & Source ZIP
 
 on:
   push:
@@ -9,163 +9,97 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
 
 jobs:
-  # 1. Web & Source Code Job
-  build-and-test:
-    name: Build, Lint & Package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Verify Repository Files & Auto-Extract ZIP if uploaded
-        run: |
-          if [ ! -f "package.json" ]; then
-            ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
-            if [ -n "$ZIP_FILE" ]; then
-              unzip -o "$ZIP_FILE" -d .
-            fi
-          fi
-          if [ ! -f "package.json" ]; then
-            SUB_PKG=$(find . -mindepth 2 -maxdepth 3 -name "package.json" | head -n 1)
-            if [ -n "$SUB_PKG" ]; then
-              cp -r "$(dirname "$SUB_PKG")"/* .
-            fi
-          fi
-
-      - run: npm install --legacy-peer-deps
-      - run: npm run lint
-      - run: npm run build
-
-      - name: Create Clean Source Code ZIP Archive
-        run: |
-          mkdir -p output
-          python3 -c "
-          import zipfile, os
-          exclude_dirs = {'node_modules', '.git', 'dist', '.aistudio', 'output'}
-          zip_filename = 'output/xiaomi-hyperos-dialer.zip'
-          with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-              for root, dirs, files in os.walk('.'):
-                  dirs[:] = [d for d in dirs if d not in exclude_dirs]
-                  for file in files:
-                      if file.endswith('.zip') or file.endswith('.apk'):
-                          continue
-                      filepath = os.path.join(root, file)
-                      arcname = os.path.relpath(filepath, '.')
-                      zipf.write(filepath, arcname)
-          "
-          cp output/xiaomi-hyperos-dialer.zip dist/xiaomi-hyperos-dialer.zip
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xiaomi-dialer-web-dist
-          path: |
-            dist/
-            output/xiaomi-hyperos-dialer.zip
-          retention-days: 30
-
-      - if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: actions/configure-pages@v5
-
-      - if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './dist'
-
-  # 2. Android APK Compilation Job (GitHub Actions)
   build-apk:
-    name: Build Android APK
-    needs: build-and-test
+    name: Build Genuine Android APK (HyperOS 2.0.5.0)
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Java JDK 17
+    steps:
+      - name: 1. Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Java JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
-      - uses: actions/setup-node@v4
+      - name: 3. Setup Android SDK (API 34 - Android 14)
+        uses: android-actions/setup-android@v3
+
+      - name: 4. Setup Node.js 20 LTS
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
+          cache: 'npm'
 
-      - name: Extract ZIP if repo only has zip
+      - name: 5. Install Dependencies
         run: |
-          if [ ! -f "package.json" ]; then
-            ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
-            if [ -n "$ZIP_FILE" ]; then
-              unzip -o "$ZIP_FILE" -d .
-            fi
-          fi
+          npm ci || npm install --legacy-peer-deps
 
-      - name: Install Dependencies & Capacitor
+      - name: 6. Build Web Application (Vite)
         run: |
-          npm install --legacy-peer-deps
-          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
           npm run build
 
-      - name: Configure Android Project & Build APK
+      - name: 7. Sync Capacitor Native Android Project
         run: |
           if [ ! -d "android" ]; then
-            npx cap add android || true
+            npx cap add android
           fi
-          npx cap sync android || true
+          npx cap sync android
 
-          mkdir -p output-apk
-          if [ -d "android" ] && [ -f "android/gradlew" ]; then
-            chmod +x android/gradlew
-            cd android
-            ./gradlew assembleDebug --no-daemon || true
-            cd ..
-            APK_PATH=$(find android -name "*debug.apk" | head -n 1)
-            if [ -n "$APK_PATH" ]; then
-              cp "$APK_PATH" output-apk/Xiaomi-HyperOS-Dialer-v2.0.5.apk
-            fi
+      - name: 8. Build Genuine Signed Android Debug APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          cd ..
+
+      - name: 9. Collect & Verify Compiled APK
+        run: |
+          mkdir -p output
+          APK_SRC=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            echo "::error::No APK file found in android/app/build/outputs/apk/debug!"
+            exit 1
           fi
+          
+          cp "$APK_SRC" output/Xiaomi-HyperOS-Dialer-v2.0.5.apk
+          echo "========================================="
+          echo "✅ REAL ANDROID APK SUCCESSFULLY COMPILED!"
+          echo "File: output/Xiaomi-HyperOS-Dialer-v2.0.5.apk"
+          ls -lh output/Xiaomi-HyperOS-Dialer-v2.0.5.apk
+          echo "========================================="
 
-          if [ ! -f "output-apk/Xiaomi-HyperOS-Dialer-v2.0.5.apk" ]; then
-            echo "Packaging standalone Android APK..."
-            python3 -c "
-            import zipfile, os
-            apk_name = 'output-apk/Xiaomi-HyperOS-Dialer-v2.0.5.apk'
-            os.makedirs('output-apk', exist_ok=True)
-            with zipfile.ZipFile(apk_name, 'w', zipfile.ZIP_DEFLATED) as apk:
-                apk.writestr('AndroidManifest.xml', b'<?xml version=\"1.0\" encoding=\"utf-8\"?><manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"com.xiaomi.hyperos.midialer\" android:versionCode=\"2050\" android:versionName=\"2.0.5.0\"><uses-permission android:name=\"android.permission.RECORD_AUDIO\"/><uses-permission android:name=\"android.permission.CALL_PHONE\"/><application android:label=\"Xiaomi HyperOS Dialer\"><activity android:name=\".MainActivity\" android:exported=\"true\"/></application></manifest>')
-                apk.writestr('META-INF/MANIFEST.MF', b'Manifest-Version: 1.0\r\nCreated-By: Xiaomi 11 Lite 5G NE Builder\r\n')
-                if os.path.exists('dist'):
-                    for r, _, fs in os.walk('dist'):
-                        for f in fs:
-                            p = os.path.join(r, f)
-                            apk.write(p, 'assets/public/' + os.path.relpath(p, 'dist'))
-            "
-          fi
+      - name: 10. Generate Clean Project ZIP
+        run: |
+          python3 -c "
+          import zipfile, os
+          exclude_dirs = {
+              'node_modules', '.git', 'dist', '.aistudio', 'output',
+              '.gradle', 'build'
+          }
+          zip_filename = 'output/xiaomi-hyperos-dialer.zip'
+          with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+              for root, dirs, files in os.walk('.'):
+                  dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.')]
+                  for file in files:
+                      if file.endswith('.zip') or file.endswith('.apk') or file.startswith('.'):
+                          if file not in ['.env.example', '.gitignore']:
+                              continue
+                      filepath = os.path.join(root, file)
+                      arcname = os.path.relpath(filepath, '.')
+                      zipf.write(filepath, arcname)
+          "
+          ls -lh output/xiaomi-hyperos-dialer.zip
 
-      # APK upload directly to GitHub Actions Artifacts
-      - name: Upload APK Artifact to GitHub
+      - name: 11. Upload Compiled APK & Source ZIP Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Xiaomi-HyperOS-Dialer-APK
-          path: output-apk/Xiaomi-HyperOS-Dialer-v2.0.5.apk
-          retention-days: 60
-
-  # 3. Deploy Web App to GitHub Pages
-  deploy:
-    name: Deploy to GitHub Pages
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    needs: [build-and-test, build-apk]
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/deploy-pages@v4
+          name: Xiaomi-HyperOS-Dialer-v2.0.5-APK
+          path: |
+            output/Xiaomi-HyperOS-Dialer-v2.0.5.apk
+            output/xiaomi-hyperos-dialer.zip
+          retention-days: 30
