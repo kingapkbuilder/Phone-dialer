@@ -25,25 +25,50 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      # 1. Node setup bina kisi lockfile dependency ke
+      # Node 22 (Warning fix)
       - name: Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      # 2. Dependencies install without strict lockfile error
+      # Check files & Auto-extract if ZIP uploaded
+      - name: Verify Repository Files & Auto-Extract ZIP if uploaded
+        run: |
+          echo "=== Checking repository contents ==="
+          ls -la
+          
+          if [ ! -f "package.json" ]; then
+            echo "Checking for uploaded zip file..."
+            ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
+            if [ -n "$ZIP_FILE" ]; then
+              echo "Extracting $ZIP_FILE..."
+              unzip -o "$ZIP_FILE" -d .
+            fi
+          fi
+
+          if [ ! -f "package.json" ]; then
+            SUB_PKG=$(find . -mindepth 2 -maxdepth 3 -name "package.json" | head -n 1)
+            if [ -n "$SUB_PKG" ]; then
+              SUB_DIR=$(dirname "$SUB_PKG")
+              cp -r "$SUB_DIR"/* .
+            fi
+          fi
+
+          if [ ! -f "package.json" ]; then
+            echo "::error::❌ ERROR: 'package.json' not found in repository root!"
+            echo "Kripya xiaomi-hyperos-dialer.zip ko extract karke saari files repository me upload karein."
+            exit 1
+          fi
+
       - name: Install Dependencies
         run: npm install --legacy-peer-deps
 
-      # 3. TypeScript Check
       - name: TypeScript Lint & Typecheck
         run: npm run lint
 
-      # 4. Production Build
       - name: Production Vite Build
         run: npm run build
 
-      # 5. Clean ZIP Archive Generation
       - name: Create Clean Source Code ZIP Archive
         run: |
           mkdir -p output
@@ -63,7 +88,6 @@ jobs:
           "
           cp output/xiaomi-hyperos-dialer.zip dist/xiaomi-hyperos-dialer.zip
 
-      # 6. Artifact Upload
       - name: Upload Build & ZIP Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -73,7 +97,6 @@ jobs:
             output/xiaomi-hyperos-dialer.zip
           retention-days: 30
 
-      # 7. Setup Pages
       - name: Setup GitHub Pages
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: actions/configure-pages@v5
