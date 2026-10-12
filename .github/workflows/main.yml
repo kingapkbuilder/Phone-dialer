@@ -1,4 +1,4 @@
-name: Build Xiaomi HyperOS Dialer APK & Source ZIP
+name: Build Xiaomi HyperOS Dialer APK
 
 on:
   push:
@@ -19,50 +19,104 @@ jobs:
       - name: 1. Checkout Repository Code
         uses: actions/checkout@v4
 
-      - name: 2. Setup Java JDK 17 (Temurin)
+      - name: 2. Auto-Detect & Extract Project Files
+        run: |
+          echo "=== Checking repository root ==="
+          ls -la
+
+          # If package.json is missing in root, check if user uploaded a ZIP file
+          if [ ! -f "package.json" ]; then
+            ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
+            if [ -n "$ZIP_FILE" ]; then
+              echo "Found ZIP file: $ZIP_FILE. Extracting to repository root..."
+              unzip -o "$ZIP_FILE" -d .
+            fi
+          fi
+
+          # If files are inside a subfolder, move them to root
+          if [ ! -f "package.json" ]; then
+            SUB_PKG=$(find . -mindepth 2 -maxdepth 3 -name "package.json" | head -n 1)
+            if [ -n "$SUB_PKG" ]; then
+              SUB_DIR=$(dirname "$SUB_PKG")
+              echo "Moving files from subfolder $SUB_DIR to root..."
+              cp -r "$SUB_DIR"/* .
+            fi
+          fi
+
+          if [ ! -f "package.json" ]; then
+            echo "::error::package.json not found! Please ensure repository contains project files."
+            exit 1
+          fi
+
+      - name: 3. Setup Java JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
-      - name: 3. Setup Android SDK (API 34 - Android 14)
+      - name: 4. Setup Android SDK (API 34)
         uses: android-actions/setup-android@v3
 
-      - name: 4. Setup Node.js 20 LTS
+      - name: 5. Setup Node.js 20 LTS
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
-      - name: 5. Install Dependencies
+      - name: 6. Install Project Dependencies
         run: |
-          npm ci || npm install --legacy-peer-deps
+          npm install --legacy-peer-deps
 
-      - name: 6. Build Web Application (Vite)
+      - name: 7. Build Web Application (Vite)
         run: |
           npm run build
 
-      - name: 7. Sync Capacitor Native Android Project
+      - name: 8. Sync Native Android Project
         run: |
           if [ ! -d "android" ]; then
             npx cap add android
           fi
           npx cap sync android
 
-      - name: 8. Build Genuine Signed Android Debug APK
+          if [ -f "android/variables.gradle" ]; then
+            sed -i 's/compileSdkVersion = .*/compileSdkVersion = 34/' android/variables.gradle
+            sed -i 's/targetSdkVersion = .*/targetSdkVersion = 34/' android/variables.gradle
+          fi
+
+          python3 -c "
+          manifest_path = 'android/app/src/main/AndroidManifest.xml'
+          with open(manifest_path, 'r') as f:
+              content = f.read()
+          if 'RECORD_AUDIO' not in content:
+              perms = '''
+    <uses-permission android:name=\"android.permission.RECORD_AUDIO\" />
+    <uses-permission android:name=\"android.permission.CALL_PHONE\" />
+    <uses-permission android:name=\"android.permission.READ_PHONE_STATE\" />
+    <uses-permission android:name=\"android.permission.READ_CALL_LOG\" />
+    <uses-permission android:name=\"android.permission.WRITE_CALL_LOG\" />
+    <uses-permission android:name=\"android.permission.READ_CONTACTS\" />
+    <uses-permission android:name=\"android.permission.WRITE_CONTACTS\" />
+    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />
+    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_MICROPHONE\" />
+    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />
+</manifest>'''
+              content = content.replace('</manifest>', perms)
+              with open(manifest_path, 'w') as f:
+                  f.write(content)
+          "
+
+      - name: 9. Build Genuine Signed Android Debug APK
         run: |
           chmod +x android/gradlew
           cd android
           ./gradlew assembleDebug --no-daemon --stacktrace
           cd ..
 
-      - name: 9. Collect & Verify Compiled APK
+      - name: 10. Verify and Collect Compiled APK
         run: |
           mkdir -p output
           APK_SRC=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
           if [ -z "$APK_SRC" ]; then
-            echo "::error::No APK file found in android/app/build/outputs/apk/debug!"
+            echo "::error::Gradle failed to generate APK file!"
             exit 1
           fi
           
@@ -73,33 +127,9 @@ jobs:
           ls -lh output/Xiaomi-HyperOS-Dialer-v2.0.5.apk
           echo "========================================="
 
-      - name: 10. Generate Clean Project ZIP
-        run: |
-          python3 -c "
-          import zipfile, os
-          exclude_dirs = {
-              'node_modules', '.git', 'dist', '.aistudio', 'output',
-              '.gradle', 'build'
-          }
-          zip_filename = 'output/xiaomi-hyperos-dialer.zip'
-          with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-              for root, dirs, files in os.walk('.'):
-                  dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.')]
-                  for file in files:
-                      if file.endswith('.zip') or file.endswith('.apk') or file.startswith('.'):
-                          if file not in ['.env.example', '.gitignore']:
-                              continue
-                      filepath = os.path.join(root, file)
-                      arcname = os.path.relpath(filepath, '.')
-                      zipf.write(filepath, arcname)
-          "
-          ls -lh output/xiaomi-hyperos-dialer.zip
-
-      - name: 11. Upload Compiled APK & Source ZIP Artifacts
+      - name: 11. Upload Compiled APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Xiaomi-HyperOS-Dialer-v2.0.5-APK
-          path: |
-            output/Xiaomi-HyperOS-Dialer-v2.0.5.apk
-            output/xiaomi-hyperos-dialer.zip
+          path: output/Xiaomi-HyperOS-Dialer-v2.0.5.apk
           retention-days: 30
